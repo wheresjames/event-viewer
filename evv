@@ -1,0 +1,758 @@
+#!/usr/bin/env python
+#
+# Developer: Robert Umbehant
+#
+
+import time
+import os
+import re
+import sys
+import string
+import curses
+import numpy
+import select
+import psutil
+import dateutil.parser
+import argparse
+
+from dateutil import tz
+from datetime import datetime
+
+
+#-------------------------------------------------------------------
+# Globals
+
+# Curses
+stdscr = 0
+
+
+#-------------------------------------------------------------------
+# Timeline
+
+def initTimeline(w, h):
+	return {'w': w, 'h': h, 'x': 0, 'y': 0, 'start': 0, 'end': 0, 'slots': numpy.zeros((h, w)) }
+
+
+def clearTimeSlots(ti, w, h):
+	ti['slots'] = numpy.zeros((h, w))
+
+
+def drawSplitTime(y, x1, x2, tw, t1, t2, color):
+
+	# Is there enough room for more time?
+	r = x2 - x1
+	if r < (tw * 4):
+		return
+
+	# Time halfway point
+	th = t2 - ((t2 - t1) / 2)
+
+	# Line halfway point
+	xh = int(x2 - ((x2 - x1) / 2))
+
+	# Get fractional second
+	fsec = float(th) - int(th)
+
+	# Draw timestamp at the half way point
+	stdscr.addstr(y, int(xh - (tw / 2)), datetime.fromtimestamp(th).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:], color)
+	stdscr.addstr(y + 1, xh, "|", color)
+
+	# Draw more markers
+	drawSplitTime(y, x1, xh, tw, t1, th, color)
+	drawSplitTime(y, xh, x2, tw, th, t2, color)
+
+
+def drawTimeline(ti, x, y, start, end, color):
+
+	# Can it be drawn?
+	if end <= start:
+		return False
+
+	# Update timeline data
+	ti['x'] = x
+	ti['y'] = y
+	ti['start'] = start
+	ti['end'] = end
+
+	# Get width / height
+	w = ti['w'] - 2
+	h = ti['h']
+
+	# Text width
+	tw = 12
+
+	# Draw the timeline
+	for i in range(x, x + w):
+		stdscr.addstr(y + 1, i, "-", color)
+
+	# Draw start time
+	fsec = float(start) - int(start)
+	stdscr.addstr(y, x, datetime.fromtimestamp(start).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:], color)
+	stdscr.addstr(y + 1, x, "|", color)
+
+	# Draw end time
+	fsec = float(end) - int(end)
+	stdscr.addstr(y, x + w - tw, datetime.fromtimestamp(end).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:], color)
+	stdscr.addstr(y + 1, x + w - 1, "|", color)
+
+	# Draw time markers in between
+	drawSplitTime(y, x, x + w, tw, start, end, color)
+
+	# Draw "now" marker
+	now = time.time()
+	if start < now and end > now:
+		xn = int((now - start) * w / (end - start))
+	elif start > now:
+		xn = x
+	else:
+		xn = w - 1
+
+	stdscr.addstr(y + 1, x + xn, "|", curses.color_pair(4))
+
+	return True
+
+
+def showTimelineItem(ti, lines, inf, tmin, tmax, col):
+
+	y = 4
+	x = 0
+
+	tr = tmax - tmin
+	w = ti['w']
+	h = ti['h']
+
+	# Event time
+	t = getVal(inf, 'time', 0)
+
+	# Start position
+	p = int((float(inf['time']) - tmin) * w / tr)
+
+	# Must fall onto screen
+	if p < x:
+		p = x
+	elif p > (w - 1):
+		p = w - 1
+
+	# String size
+	if 1 < lines:
+		maxtxt = len(inf['msg']) + 1
+	else:
+		maxtxt = 1
+
+	# Clip to screen
+	if maxtxt > (w - p):
+		maxtxt = w - p
+
+	# Anything to do?
+	if 0 >= maxtxt:
+		return
+
+	slot = -1
+	slots = ti['slots']
+
+	# Find a slot
+	for s in range(0, int((h - y - 2) / lines)):
+
+		# Is there room for text in this slot?
+		for i in range(0, maxtxt):
+
+			# Break if someone else is in this slot
+			if slots[s][p + i]:
+				break;
+
+		# Is the slot clear?
+		if not slots[s][p + i]:
+			slot = s
+			break
+
+	# Did we find a slot?
+	if 0 > slot:
+		return False
+
+	# Claim the slot
+	for i in range(p, p + maxtxt):
+		slots[slot][i] = 1
+
+	# Show what we have room for
+	if 0 < maxtxt:
+
+		# Only one line per slot, just show an X
+		if 1 == lines:
+			stdscr.addstr(y + slot, p, "|", curses.color_pair(col + 10))
+
+		# More than one line per slot, show time and description
+		elif 1 < lines:
+
+			# Is there room for time string?
+			if 14 <= (w - p):
+				fsec = float(t) - int(t)
+				tt = datetime.fromtimestamp(t).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:]
+				stdscr.addstr(y + (slot * lines), p, "| " + tt, curses.color_pair(col + 10))
+			else:
+				stdscr.addstr(y + (slot * lines), p, "|", curses.color_pair(col + 10))
+
+			# Show the description
+			stdscr.addstr(y + (slot * lines) + 1, p, inf['msg'][:maxtxt], curses.color_pair(col))
+
+	# Something worked
+	return True
+
+
+#-------------------------------------------------------------------
+# File parsing
+
+def processLineDate(s):
+
+	if not len(s):
+		return {}
+
+	# Look for a date
+	ln, d = findDate(s)
+
+	# Did we find a date?
+	if 0 >= ln:
+		return {}
+
+	# Get timestamp
+	try:
+		ts = time.mktime(d.timetuple())
+	except:
+		return {}
+
+	return { 'time': ts, 'msg': s[ln:].lstrip() }
+
+
+def processLineAuto(s):
+
+	if not len(s):
+		return {}
+
+	ok = False
+	t = time.time()
+	p = 6
+
+	# Seconds in a year
+	year = 60 * 60 * 24 * 365
+
+	# Look for a formated string
+	d = s.split(" ", 1)
+	if 1 < len(d):
+		try:
+
+			# Attempt to read time
+			_t = float(d[0])
+
+			# Does it kinda look like a timestamp?
+			if (t - year) < _t and (t + year) > _t:
+				t = _t
+				s = d[1]
+				ok = True
+
+				# Try for a priority
+				d = s.split(" ", 1)
+				if 1 < len(d):
+					try:
+						_p = int(d[0])
+						if 0 < p and 100 > p:
+							p = _p
+							s = d[1]
+					except:
+						pass
+
+		except:
+			pass
+
+	# If that failed, try for a date
+	if not ok:
+
+		r = processLineDate(s)
+
+		if 0 < len(r):
+			return r
+
+	# Send what we got
+	return { 'time': t, 'sev': p, 'msg': s }
+
+
+def processLineKMsg(s):
+
+	d = s.split(",")
+
+	if len(d) < 4:
+		return {}
+
+	t = float(psutil.boot_time())
+
+	if not t:
+		t = time.time()
+
+	return { 'sev':d[0], 'seq':d[1], 'offset':d[2], 'time':float(d[2]) / 1000000.0 + t, 'msg':d[3] }
+
+
+def processLine(p, s):
+
+	type = p['datatype']
+
+	if 'text' == type.lower():
+		return { 'time': time.time(), 'msg': s }
+
+	elif 'date' == type.lower():
+		return processDate(s)
+
+	elif 'kmsg' == type.lower():
+		return processLineKMsg(s)
+
+	return processLineAuto(s)
+
+
+def filterLine(filter, s):
+
+	if not len(s):
+		return ''
+
+	# Do we have a filter?
+	if len(filter):
+		m = re.match(filter, s)
+		if m:
+			s = m.group(1)
+		else:
+			return ''
+
+	return s
+
+
+#-------------------------------------------------------------------
+# Functions
+
+def getLine(fh):
+
+	# Make sure the file is ready to read
+	if fh not in select.select([fh], [], [], 0)[0]:
+		return ''
+
+	# Try to read a line
+	return fh.readline()
+
+
+def getVal(a, k, d = 0):
+
+	if type(a) is list:
+		if len(a) > k:
+			return a[k]
+
+	elif type(a) is dict:
+		if k in a:
+			return a[k]
+
+	return d
+
+
+def setFilePtr(fh, max):
+
+	sz = os.fstat(fh.fileno()).st_size
+	if 0 >= sz:
+		return 0
+
+	if 0 <= max:
+
+		if max > sz:
+			max = sz
+
+		return fh.seek(max, os.SEEK_BEGIN)
+
+	max = -max
+	if max > sz:
+		max = sz
+
+	return fh.seek(-max, os.SEEK_END)
+
+
+def getContents(file, max):
+
+	sz = os.path.getsize(file)
+
+	if 0 <= max:
+		return open(file, 'rb').read(max if 0 < max and max < sz else sz)
+
+	# Reading from the end
+	max = -max
+
+	if sz < max:
+		return open(file, 'rb').read(sz)
+
+	f = open(file, 'rb')
+
+	f.seek(-max, os.SEEK_END)
+
+	s = f.read()
+
+	# Strip off potentially partial line
+	s = s.split('\n', 1)[-1]
+
+	return s
+
+
+def findDate(txt):
+
+	# Don't check more than 40 chars
+	max = len(txt)
+	if 40 < max:
+		max = 40
+
+	fm = 0
+	fd = 0
+
+	# Work our way backward through possible string lengths
+	while 8 <= max:
+
+		try:
+			d = dateutil.parser.parse(txt[:max])
+
+			if fd and d != fd:
+				return fm, fd
+
+			fm = max
+			fd = d
+
+		except:
+			pass
+
+		max -= 1
+
+	# Did we find a date?
+	if not fd:
+		return 0, 0
+
+	return fm, fd
+
+
+def drawScreen(p, ti, msgs = []):
+	global stdscr
+
+	# Erase screen
+	stdscr.erase()
+
+	# Current time
+	t = p['time']
+	lines = p['msg_lines']
+
+	# Screen width / height
+	w = ti['w']
+	h = ti['h']
+
+	# Time range we will be displaying
+	time_range = getVal(p, 'time_range', 60)
+	tmin = t
+	tmax = t + time_range
+	tr = tmax - tmin
+
+	# Screen position range
+	pr = w - 1
+
+	# Show timeline
+	drawTimeline(ti, 0, 1, tmin, tmax, curses.color_pair(1))
+
+	# Clear slots
+	clearTimeSlots(ti, w, h)
+
+	# Display messages in the current timeframe
+	for i in msgs:
+
+		if 'time' in i:
+
+			try:
+
+				# Event time
+				tm = float(i['time'])
+
+				# Is it in the range of the display?
+				if tm > tmin and tm < tmax:
+
+					# Item color
+					col = 10
+					sev = int(getVal(i, 'sev', 6))
+					if 1 > sev:
+						sev = 1
+					if sev < 6:
+						col = 16 - sev
+
+					showTimelineItem(ti, lines, i, tmin, tmax, col)
+
+			except:
+				continue
+
+
+def initCurses():
+	global stdscr
+
+	# Init curses
+	stdscr = curses.initscr()
+	stdscr.keypad(1)
+	stdscr.nodelay(1)
+
+	curses.start_color()
+	curses.cbreak()
+	curses.noecho()
+	curses.curs_set(0)
+
+	# Screen colors
+	curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)
+	curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_GREEN)
+	curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_RED)
+	curses.init_pair(4, curses.COLOR_RED, curses.COLOR_BLACK)
+
+	# Inverted timeline colors
+	curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_GREEN)
+	curses.init_pair(11, curses.COLOR_BLACK, curses.COLOR_CYAN)
+	curses.init_pair(12, curses.COLOR_BLACK, curses.COLOR_BLUE)
+	curses.init_pair(13, curses.COLOR_BLACK, curses.COLOR_MAGENTA)
+	curses.init_pair(14, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+	curses.init_pair(15, curses.COLOR_BLACK, curses.COLOR_RED)
+
+	# Non inverted timeline colors
+	curses.init_pair(20, curses.COLOR_GREEN, curses.COLOR_BLACK)
+	curses.init_pair(21, curses.COLOR_CYAN, curses.COLOR_BLACK)
+	curses.init_pair(22, curses.COLOR_BLUE, curses.COLOR_BLACK)
+	curses.init_pair(23, curses.COLOR_MAGENTA, curses.COLOR_BLACK)
+	curses.init_pair(24, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+	curses.init_pair(25, curses.COLOR_RED, curses.COLOR_BLACK)
+
+
+#-------------------------------------------------------------------
+# Main
+
+def main():
+	global stdscr, msgs
+
+	#---------------------------------------------------------------
+	# Parse command line arguments
+
+	ap = argparse.ArgumentParser(description='Event monitor.')
+	ap.add_argument('--logfile', '-f', default='', type=str, help='Log file to parse')
+	ap.add_argument('--refresh', '-R', default=3, type=float, help='Refresh interval in seconds, 0 for no refresh')
+	ap.add_argument('--scroll', '-s', default=1, type=int, help='1 = Auto scroll data, 0 = Do not auto scroll')
+	ap.add_argument('--lines', '-l', default=2, type=int, help='Number of lines per timeline item, can be 1, 2, or 3')
+	ap.add_argument('--timerange', '-r', default=600.0, type=float, help='Time range')
+	ap.add_argument('--time', '-t', default=0, type=str, help='Time start')
+	ap.add_argument('--datatype', '-d', default='auto', type=str, help='Source data type')
+	ap.add_argument('--inputfilter', '-I', default='', type=str, help='Regex filter expression for input data')
+	ap.add_argument('--maxmsgbuf', '-m', default=1000, type=int, help='Maxium number of messages to queue')
+	ap.add_argument('--maxfileread', '-M', default=10000, type=int, help='Maxium number of bytes to read from a file, 0 for all')
+	ap.add_argument('--debug', '-D', action='store_true', help='Show debug information')
+	args = ap.parse_args()
+
+	p = {}
+	p['time_range'] = args.timerange
+	p['time'] = time.time()
+	p['msg_lines'] = args.lines
+	p['refresh'] = args.refresh
+	p['scroll'] = args.scroll
+	p['datatype'] = args.datatype
+	p['file'] = args.logfile
+	p['ifilter'] = args.inputfilter
+	p['maxmsgbuf'] = args.maxmsgbuf
+	p['maxfileread'] = args.maxfileread
+	p['debug'] = args.debug
+
+
+	#---------------------------------------------------------------
+	# Initialize
+
+	# Will our input come from stdin?
+	usestdin = p['file'] == '-'
+
+	# Default to system log
+	if not p['file']:
+		p['file'] = '/var/log/syslog'
+
+	# Data buffer
+	msgs = []
+	msgs_time = 0
+
+	# Data source
+	fh = 0 if not usestdin else sys.stdin
+
+	#---------------------------------------------------------------
+	# Catch exceptions so we can restore the screen
+	try:
+
+		# Init Curses
+		initCurses()
+
+		# Screen width / height
+		h, w = stdscr.getmaxyx()
+
+		# Initialize timeline
+		ti = initTimeline(w, h)
+
+		# Draw initial screen
+		drawScreen(p, ti)
+
+		# Turn off refresh interval for stdin
+		if usestdin:
+			p['refresh'] = 0
+
+		#-----------------------------------------------------------
+		# Run the loop
+		while 1:
+
+			# Current time
+			now = time.time()
+
+			#-------------------------------------------------------
+			# Process key presses
+
+			# Don't poll the keyboard if we're getting data from stdin
+			if usestdin:
+				key = 0
+			else:
+				key = stdscr.getch()
+
+			# Did we get a key press?
+			if 0 < key:
+
+				# Was there a screen resize?
+				if curses.KEY_RESIZE == key:
+					w = 0
+					h = 0
+
+				# Zoom in
+				elif curses.KEY_UP == key:
+					if 0.001 < p['time_range']:
+						p['time'] += p['time_range'] / 20
+						p['time_range'] /= 1.1
+
+				# Zoom out
+				elif curses.KEY_DOWN == key:
+					if 100000 > p['time_range']:
+						p['time'] -= p['time_range'] / 20
+						p['time_range'] *= 1.1
+
+				# Scroll right
+				elif curses.KEY_RIGHT == key:
+					p['scroll'] = 0
+					p['time'] += float(p['time_range']) / 20
+
+				# Scroll left
+				elif curses.KEY_LEFT == key:
+					p['scroll'] = 0
+					p['time'] -= float(p['time_range']) / 20
+
+				# Lines per timeline item
+				elif 'l' == chr(key).lower():
+					p['msg_lines'] += 1
+					if 3 < p['msg_lines']:
+						p['msg_lines'] = 1
+
+				# Auto scrolling
+				elif 's' == chr(key).lower():
+					p['scroll'] = not p['scroll']
+
+				# Quit on Escape or 'q'
+				elif 27 == key or 'q' == chr(key).lower():
+					break
+
+
+			#-------------------------------------------------------
+			# Get Data
+
+			# Refresh messages
+			if usestdin or 0 >= len(msgs) or 0 > p['refresh'] or (p['refresh'] and now > msgs_time):
+
+				# Resolve input
+				if not usestdin:
+
+					# Open data stream if needed
+					if not fh:
+
+						# Open file stream
+						fh = open(p['file'], 'rb')
+
+						# Don't read to much data
+						if 0 != p['maxfileread']:
+
+							# Back up from the end
+							setFilePtr(fh, -p['maxfileread'])
+
+							# Eat potential partial line
+							getLine(fh)
+
+				# Read data from input stream
+				while 1:
+
+					s = getLine(fh)
+					if not len(s):
+						break;
+
+					# Do we have a filter?
+					if len(p['ifilter']):
+
+						s = filterLine(p['ifilter'], s)
+
+						if not len(s):
+							continue
+
+					r = processLine(p, s)
+
+					if 0 <= len(r):
+						msgs.append(r)
+
+
+				# Prune excess messages
+				if len(msgs) > p['maxmsgbuf']:
+					msgs = msgs[len(msgs) - p['maxmsgbuf']:]
+
+				# Close pipe if not refreshing
+				if not usestdin and fh and not p['refresh']:
+					fh.close()
+					fh = 0
+
+				# Save data time
+				msgs_time = now + p['refresh']
+
+
+			#-------------------------------------------------------
+			# Update the terminal
+
+			# Track real time?
+			if p['scroll']:
+				p['time'] = now - (p['time_range'] * 0.75)
+
+			# Check for terminal resize
+			_h, _w = stdscr.getmaxyx()
+			if _h != h or _w != w:
+				h = _h
+				w = _w
+				ti = initTimeline(w, h)
+
+			# Update the screen
+			try:
+				drawScreen(p, ti, msgs)
+
+			# If curses complains, it's probably a terminal resize
+			except curses.error:
+				key = 1
+				pass
+
+			# Debug info
+			if p['debug']:
+				stdscr.addstr(0, 0, str(len(msgs)) + " : " + str(p))
+
+			# Refresh the terminal
+			stdscr.refresh()
+
+			# Pause if no keys being pressed
+			if 0 >= key:
+				time.sleep(.25)
+
+	except:
+		curses.endwin()
+		print "...EXCEPTION..."
+		raise		
+
+	curses.endwin()
+
+
+if __name__ == '__main__':
+	main()
+
