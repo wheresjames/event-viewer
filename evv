@@ -755,7 +755,10 @@ def main():
 
 			# Debug info
 			if p['debug']:
-				stdscr.addstr(0, 0, str(len(msgs)) + " : " + str(p))
+				stdscr.addstr(0, 1, str(len(msgs)) + " : " + str(p))
+
+			# Home the cursor
+			stdscr.addstr(0, 0, ">")
 
 			# Refresh the terminal
 			stdscr.refresh()
