@@ -2,11 +2,11 @@
 
 Command line event log viewer.
 
-[Screen Shot](https://raw.githubusercontent.com/wheresjames/event-viewer/master/docs/imgs/view-kmsg.png)
+![Screen Shot](https://raw.githubusercontent.com/wheresjames/event-viewer/master/docs/imgs/view-kmsg.png)
 
 This python script `evv` will allow you to graphically navigate log files.
 
-## Keyboard
+##Keyboard
 
 * LEFT = Scroll back in time
 * RIGHT = Scroll forward in time
