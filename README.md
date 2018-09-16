@@ -6,7 +6,7 @@ Command line event log viewer.
 
 This python script `evv` will allow you to graphically navigate log files.
 
-##Keyboard
+## Keyboard
 
 * LEFT = Scroll back in time
 * RIGHT = Scroll forward in time
@@ -18,7 +18,7 @@ This python script `evv` will allow you to graphically navigate log files.
 * q / esc = Quit
 
 
-##Examples:
+## Examples:
 
 * Navigate kernel messages
 
