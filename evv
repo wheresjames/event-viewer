@@ -758,7 +758,7 @@ def main():
 				stdscr.addstr(0, 1, str(len(msgs)) + " : " + str(p))
 
 			# Home the cursor
-			stdscr.addstr(0, 0, ">")
+			stdscr.addstr(0, 0, ">" + p['file'])
 
 			# Refresh the terminal
 			stdscr.refresh()
