@@ -39,6 +39,7 @@ This python script `evv` will allow you to graphically navigate log files.
 
 ## Help
 
+```
 usage: evv [-h] [--inputfile INPUTFILE] [--inputformat INPUTFORMAT]
            [--inputbreak INPUTBREAK] [--inputfilter INPUTFILTER]
            [--outputfile OUTPUTFILE] [--outputformat OUTPUTFORMAT]
@@ -76,4 +77,4 @@ optional arguments:
   --maxfileread MAXFILEREAD, -M MAXFILEREAD
                         Maxium number of bytes to read from a file, 0 for all
   --debug, -D           Show debug information
-
+```
