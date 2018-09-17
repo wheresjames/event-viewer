@@ -100,19 +100,22 @@ def drawTimeline(ti, x, y, start, end, color):
 
 	# Draw "now" marker
 	now = time.time()
+	nowmrk = "|"
 	if start < now and end > now:
 		xn = int((now - start) * w / (end - start))
 	elif start > now:
 		xn = x
+		nowmrk = "<"
 	else:
 		xn = w - 1
+		nowmrk = ">"
 
-	stdscr.addstr(y + 1, x + xn, "|", curses.color_pair(4))
+	stdscr.addstr(y + 1, x + xn, nowmrk, curses.color_pair(4))
 
 	return True
 
 
-def showTimelineItem(ti, lines, inf, tmin, tmax, col):
+def showTimelineItem(ti, lines, inf, tmin, tmax):
 
 	y = 4
 	x = 0
@@ -147,6 +150,20 @@ def showTimelineItem(ti, lines, inf, tmin, tmax, col):
 	if 0 >= maxtxt:
 		return
 
+	# Item color
+	col = 10
+	sev = int(getVal(inf, 'sev', 6))
+	if 1 > sev:
+		sev = 1
+	if sev < 6:
+		col = 16 - sev
+
+	# Log the in-use point
+	if 0 >= ti['inuse'][p] or col > ti['inuse'][p]:
+		ti['inuse'][p] = col
+
+	# Does the item already have a preferred slot?
+	pslot = getVal(inf, 'slot', 0)
 	slot = -1
 	slots = ti['slots']
 
@@ -162,8 +179,14 @@ def showTimelineItem(ti, lines, inf, tmin, tmax, col):
 
 		# Is the slot clear?
 		if not slots[s][p + i]:
-			slot = s
-			break
+
+			# Prevent slot aliasing
+			if 1 >= p or s >= pslot or ( not slots[s][p - 1] and not slots[s][p - 2]):
+				slot = s
+				break
+
+	# Mark as preferred slot (even if we didn't get a slot)
+	inf['slot'] = s
 
 	# Did we find a slot?
 	if 0 > slot:
@@ -194,12 +217,21 @@ def showTimelineItem(ti, lines, inf, tmin, tmax, col):
 			# Show the description
 			stdscr.addstr(y + (slot * lines) + 1, p, inf['msg'][:maxtxt], curses.color_pair(col))
 
+
+
 	# Something worked
 	return True
 
 
 #-------------------------------------------------------------------
 # File parsing
+
+def calcPriority(s):
+	if 0 <= s.lower().find('error'):
+		return 1
+	elif 0 <= s.lower().find('warn'):
+		return 2
+	return 6
 
 def processLineDate(s):
 
@@ -219,7 +251,9 @@ def processLineDate(s):
 	except:
 		return {}
 
-	return { 'time': ts, 'msg': s[ln:].lstrip() }
+	s = s[ln:].lstrip()
+
+	return { 'time': ts, 'msg': s, 'sev': calcPriority(s) }
 
 
 def processLineAuto(s):
@@ -229,7 +263,7 @@ def processLineAuto(s):
 
 	ok = False
 	t = time.time()
-	p = 6
+	p = -1
 
 	# Seconds in a year
 	year = 60 * 60 * 24 * 365
@@ -270,6 +304,9 @@ def processLineAuto(s):
 		if 0 < len(r):
 			return r
 
+	if 0 > p:
+		p = calcPriority(s)
+
 	# Send what we got
 	return { 'time': t, 'sev': p, 'msg': s }
 
@@ -291,10 +328,10 @@ def processLineKMsg(s):
 
 def processLine(p, s):
 
-	type = p['datatype']
+	type = p['inputformat']
 
 	if 'text' == type.lower():
-		return { 'time': time.time(), 'msg': s }
+		return { 'time': time.time(), 'msg': s, 'sev': calcPriority(s) }
 
 	elif 'date' == type.lower():
 		return processDate(s)
@@ -308,17 +345,69 @@ def processLine(p, s):
 def filterLine(filter, s):
 
 	if not len(s):
-		return ''
+		return [], ''
 
 	# Do we have a filter?
-	if len(filter):
-		m = re.match(filter, s)
-		if m:
-			s = m.group(1)
-		else:
-			return ''
+	if not len(filter):
+		return [], s
 
-	return s
+	try:
+		r = []
+		m = re.match(filter, s)
+		if not m:
+			return [], ''
+
+		g = m.groupdict()
+
+		# Message
+		if 1 in g:
+			s = g[1]
+		elif 'msg' in g:
+			s = g['msg']
+
+		# Punt if we didn't get a message
+		if not len(s):
+			return [], ''
+
+		# Did we get a time?
+		if 2 in g:
+			r['time'] = g[2]
+		elif 'time' in g:
+			r['time'] = g['time']
+
+		# Did we get a severity?
+		if 3 in g:
+			r['sev'] = g[3]
+		elif 'sev' in g:
+			r['sev'] = g['sev']
+
+		# Process time
+		if 'time' in r:
+			try:
+				r['time'] = float(r['time'])
+			except:
+				try:
+					d = dateutil.parser.parse(txt[:max])
+					if d:
+						r['time'] = time.mktime(d.timetuple())
+					else:
+						del r['time']
+				except:
+					del r['time']
+
+		# Process severity
+		if 'sev' in r:
+			try:
+				r['sev'] = int(r['sev'])
+			except:
+				r['sev'] = calcPriority(s)
+
+		return r, s
+
+	except:
+		pass
+
+	return [], ''
 
 
 #-------------------------------------------------------------------
@@ -408,6 +497,7 @@ def findDate(txt):
 		try:
 			d = dateutil.parser.parse(txt[:max])
 
+			# We'll take the longest valid date
 			if fd and d != fd:
 				return fm, fd
 
@@ -454,6 +544,7 @@ def drawScreen(p, ti, msgs = []):
 
 	# Clear slots
 	clearTimeSlots(ti, w, h)
+	ti['inuse'] = [0] * w
 
 	# Display messages in the current timeframe
 	for i in msgs:
@@ -468,18 +559,15 @@ def drawScreen(p, ti, msgs = []):
 				# Is it in the range of the display?
 				if tm > tmin and tm < tmax:
 
-					# Item color
-					col = 10
-					sev = int(getVal(i, 'sev', 6))
-					if 1 > sev:
-						sev = 1
-					if sev < 6:
-						col = 16 - sev
-
-					showTimelineItem(ti, lines, i, tmin, tmax, col)
+					showTimelineItem(ti, lines, i, tmin, tmax)
 
 			except:
 				continue
+
+	# Draw the in-use line
+	for i in range(0,len(ti['inuse'])):
+		if 0 < ti['inuse'][i]:
+			stdscr.addstr(3, i, '.', curses.color_pair(ti['inuse'][i] + 10))
 
 
 def initCurses():
@@ -528,44 +616,52 @@ def main():
 	# Parse command line arguments
 
 	ap = argparse.ArgumentParser(description='Event monitor.')
-	ap.add_argument('--logfile', '-f', default='', type=str, help='Log file to parse')
-	ap.add_argument('--refresh', '-R', default=3, type=float, help='Refresh interval in seconds, 0 for no refresh')
-	ap.add_argument('--scroll', '-s', default=1, type=int, help='1 = Auto scroll data, 0 = Do not auto scroll')
-	ap.add_argument('--lines', '-l', default=2, type=int, help='Number of lines per timeline item, can be 1, 2, or 3')
+
+	ap.add_argument('--inputfile', '-i', default='', type=str, help='Log file to parse')
+	ap.add_argument('--inputformat', '-I', default='auto', type=str, help='Input data format')
+	ap.add_argument('--inputbreak', '-b', default='', type=str, help='Line break')
+	ap.add_argument('--inputfilter', '-f', default='', type=str, help='Regex filter expression for input data')
+	ap.add_argument('--outputfile', '-o', default='', type=str, help='Append logs to output file')
+	ap.add_argument('--outputformat', '-O', default='', type=str, help='Output data format')
+
 	ap.add_argument('--timerange', '-r', default=600.0, type=float, help='Time range')
 	ap.add_argument('--time', '-t', default=0, type=str, help='Time start')
-	ap.add_argument('--datatype', '-d', default='auto', type=str, help='Source data type')
-	ap.add_argument('--inputfilter', '-I', default='', type=str, help='Regex filter expression for input data')
+
+	ap.add_argument('--refresh', '-R', default=3, type=float, help='Data refresh interval in seconds, 0 for no refresh')
+	ap.add_argument('--scroll', '-s', default=1, type=int, help='1 = Auto scroll data, 0 = Do not auto scroll')
+	ap.add_argument('--lines', '-l', default=2, type=int, help='Number of lines per timeline item, can be 1, 2, or 3')
 	ap.add_argument('--maxmsgbuf', '-m', default=1000, type=int, help='Maxium number of messages to queue')
 	ap.add_argument('--maxfileread', '-M', default=10000, type=int, help='Maxium number of bytes to read from a file, 0 for all')
 	ap.add_argument('--debug', '-D', action='store_true', help='Show debug information')
-	ap.add_argument('--output', '-o', default='', type=str, help='Append logs to output file')
 	args = ap.parse_args()
 
 	p = {}
+	p['inputfile'] = args.inputfile
+	p['inputformat'] = args.inputformat
+	p['inputfilter'] = args.inputfilter
+	p['inputbreak'] = args.inputbreak
+	p['outputfile'] = args.outputfile
+	p['outputformat'] = args.outputformat
+
 	p['time_range'] = args.timerange
 	p['time'] = time.time()
 	p['msg_lines'] = args.lines
 	p['refresh'] = args.refresh
 	p['scroll'] = args.scroll
-	p['datatype'] = args.datatype
-	p['file'] = args.logfile
-	p['ifilter'] = args.inputfilter
 	p['maxmsgbuf'] = args.maxmsgbuf
 	p['maxfileread'] = args.maxfileread
 	p['debug'] = args.debug
-	p['output'] = args.output
 
 
 	#---------------------------------------------------------------
 	# Initialize
 
 	# Will our input come from stdin?
-	usestdin = p['file'] == '-'
+	usestdin = p['inputfile'] == '-'
 
 	# Default to system log
-	if not p['file']:
-		p['file'] = '/var/log/syslog'
+	if not p['inputfile']:
+		p['inputfile'] = '/var/log/syslog'
 
 	# Data buffer
 	msgs = []
@@ -573,6 +669,9 @@ def main():
 
 	# Data source
 	fh = 0 if not usestdin else sys.stdin
+
+	# Output file handle
+	fo = 0
 
 	#---------------------------------------------------------------
 	# Catch exceptions so we can restore the screen
@@ -594,9 +693,9 @@ def main():
 		if usestdin:
 			p['refresh'] = 0
 
-		fo = 0
-		if len(p['output']):
-			fo = open(p['output'], 'ab')
+		# Open output file if we need one
+		if len(p['outputfile']):
+			fo = open(p['outputfile'], 'ab')
 
 		#-----------------------------------------------------------
 		# Run the loop
@@ -672,7 +771,7 @@ def main():
 					if not fh:
 
 						# Open file stream
-						fh = open(p['file'], 'rb')
+						fh = open(p['inputfile'], 'rb')
 
 						# Don't read to much data
 						if 0 != p['maxfileread']:
@@ -691,15 +790,23 @@ def main():
 						break;
 
 					# Do we have a filter?
-					if len(p['ifilter']):
+					if len(p['inputfilter']):
 
-						s = filterLine(p['ifilter'], s)
+						# Run the line through the filter
+						r, s = filterLine(p['inputfilter'], s)
 
 						if not len(s):
 							continue
 
-					r = processLine(p, s)
+						# Did the filter yield components?
+						if not len(r):
+							r = processLine(p, s)
 
+					# Default processing
+					else:
+						r = processLine(p, s)
+
+					# Did we get something to log?
 					if 0 <= len(r):
 
 						# Append to memory buffer
@@ -756,6 +863,9 @@ def main():
 			# Debug info
 			if p['debug']:
 				stdscr.addstr(0, 1, str(len(msgs)) + " : " + str(p))
+
+			# Draw file name
+			stdscr.addstr(0, 2, p['inputfile'])
 
 			# Home the cursor
 			stdscr.addstr(0, 0, ">" + p['file'])
