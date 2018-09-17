@@ -199,7 +199,7 @@ def showTimelineItem(ti, lines, inf, tmin, tmax):
 	# Show what we have room for
 	if 0 < maxtxt:
 
-		# Only one line per slot, just show an X
+		# Only one line per slot, just show |
 		if 1 == lines:
 			stdscr.addstr(y + slot, p, "|", curses.color_pair(col + 10))
 
@@ -216,8 +216,6 @@ def showTimelineItem(ti, lines, inf, tmin, tmax):
 
 			# Show the description
 			stdscr.addstr(y + (slot * lines) + 1, p, inf['msg'][:maxtxt], curses.color_pair(col))
-
-
 
 	# Something worked
 	return True
@@ -546,23 +544,31 @@ def drawScreen(p, ti, msgs = []):
 	clearTimeSlots(ti, w, h)
 	ti['inuse'] = [0] * w
 
-	# Display messages in the current timeframe
-	for i in msgs:
+	# For each severity level
+	for k in range(1, 5):
 
-		if 'time' in i:
+		# For each message
+		for i in msgs:
 
-			try:
+			sev = int(getVal(i, 'sev', 6))
 
-				# Event time
-				tm = float(i['time'])
+			# Order by severity
+			if k == sev or (4 == k and ( 0 >= sev or 4 <= sev)):
 
-				# Is it in the range of the display?
-				if tm > tmin and tm < tmax:
+				if 'time' in i:
 
-					showTimelineItem(ti, lines, i, tmin, tmax)
+					try:
 
-			except:
-				continue
+						# Event time
+						tm = float(i['time'])
+
+						# Is it in the range of the display?
+						if tm > tmin and tm < tmax:
+
+							showTimelineItem(ti, lines, i, tmin, tmax)
+
+					except:
+						continue
 
 	# Draw the in-use line
 	for i in range(0,len(ti['inuse'])):
@@ -868,7 +874,7 @@ def main():
 			stdscr.addstr(0, 2, p['inputfile'])
 
 			# Home the cursor
-			stdscr.addstr(0, 0, ">" + p['file'])
+			stdscr.addstr(0, 0, ">")
 
 			# Refresh the terminal
 			stdscr.refresh()
