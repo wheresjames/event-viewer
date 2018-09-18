@@ -33,15 +33,22 @@ stdscr = 0
 def initTimeline(w, h):
 
 	# At least 500 rows
-	if 500 < h:
-		h = 500
+	rows = h
+	if 500 > rows:
+		rows = 500
 
 	return {'w': w, 'h': h, 'x': 0, 'y': 0, 'start': 0, 'end': 0, \
-			'max_disp': 0, 'max_slot': 0, 'slots': numpy.zeros((h, w)) }
+			'max_disp': 0, 'max_slot': 0, 'slots': numpy.zeros((rows, w)) }
 
 
 def clearTimeSlots(ti, w, h):
-	ti['slots'] = numpy.zeros((h, w))
+
+	# At least 500 rows
+	rows = h
+	if 500 > rows:
+		rows = 500
+
+	ti['slots'] = numpy.zeros((rows, w))
 
 
 def drawSplitTime(y, x1, x2, tw, t1, t2, color):
@@ -121,6 +128,7 @@ def drawTimeline(ti, x, y, start, end, color):
 
 	return True
 
+
 def showTimelineRowNums(ti, pg, lines):
 
 	y = 4
@@ -133,14 +141,13 @@ def showTimelineRowNums(ti, pg, lines):
 		stdscr.addstr(y + (i * lines), x, "%02d" % n, curses.color_pair(1))
 
 
-
 def showTimelineItem(ti, pg, lines, inf, tmin, tmax):
 
 	y = 4
 	x = 4
 
 	tr = tmax - tmin
-	w = ti['w']
+	w = ti['w'] - x - 2
 	h = ti['h']
 
 	# Event time
@@ -154,14 +161,19 @@ def showTimelineItem(ti, pg, lines, inf, tmin, tmax):
 	ti['max_disp'] = maxdisp
 
 	# Must fall onto screen
-	if p < x:
-		p = x
-	elif p > (w - 1):
+	if p < 0:
+		p = 0
+	elif p >= w:
 		p = w - 1
+
+	# Display message
+	msg = inf['msg']
+	printable = set(string.printable)
+	msg = filter(lambda x: ord(x) >= ord(' ') and x in printable, msg)
 
 	# String size
 	if 1 < lines:
-		maxtxt = len(inf['msg']) + 1
+		maxtxt = len(msg) + 1
 	else:
 		maxtxt = 1
 
@@ -189,7 +201,7 @@ def showTimelineItem(ti, pg, lines, inf, tmin, tmax):
 	pslot = getVal(inf, 'slot', 0)
 	slot = -1
 	slots = ti['slots']
-	maxslots = len(slots[0])
+	maxslots = len(slots)
 
 	# Find a slot
 	for s in range(0, maxslots):
@@ -204,13 +216,22 @@ def showTimelineItem(ti, pg, lines, inf, tmin, tmax):
 		# Is the slot clear?
 		if not slots[s][p + i]:
 
-			# Prevent slot aliasing
-			if 1 >= p or s >= pslot or ( not slots[s][p - 1] and not slots[s][p - 2]):
+			# Preferred slot?
+			if s >= pslot:
 				slot = s
 				break
 
-	# Mark as preferred slot (even if we didn't get a slot)
-	inf['slot'] = s
+			# Move up if no other labels are too close
+			preclear = (1 >= p) or (not slots[s][p - 1] and not slots[s][p - 2])
+			postclear = ((p + i + 2) > w) or (not slots[s][p + i + 1] and not slots[s][p + i + 2])
+
+			# Prevent slot aliasing
+			if preclear and postclear:
+				slot = s
+				break
+
+	# Mark preferred slot (even if we didn't get a slot)
+	inf['slot'] = s if 0 > slot else slot
 
 	# Track max slot
 	if ti['max_slot'] < slot:
@@ -229,7 +250,7 @@ def showTimelineItem(ti, pg, lines, inf, tmin, tmax):
 
 		# Only one line per slot, just show |
 		if 1 == lines:
-			stdscr.addstr(y + slot - pg, p, "|", curses.color_pair(col + 10))
+			stdscr.addstr(y + slot - pg, x + p, "|", curses.color_pair(col + 10))
 
 		# More than one line per slot, show time and description
 		elif 1 < lines:
@@ -238,12 +259,12 @@ def showTimelineItem(ti, pg, lines, inf, tmin, tmax):
 			if 14 <= (w - p):
 				fsec = float(t) - int(t)
 				tt = datetime.fromtimestamp(t).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:]
-				stdscr.addstr(y + ((slot - pg) * lines), p, "| " + tt, curses.color_pair(col + 10))
+				stdscr.addstr(y + ((slot - pg) * lines), x + p, "| " + tt, curses.color_pair(col + 10))
 			else:
-				stdscr.addstr(y + ((slot - pg) * lines), p, "|", curses.color_pair(col + 10))
+				stdscr.addstr(y + ((slot - pg) * lines), x + p, "|", curses.color_pair(col + 10))
 
 			# Show the description
-			stdscr.addstr(y + ((slot - pg) * lines) + 1, p, inf['msg'][:maxtxt], curses.color_pair(col))
+			stdscr.addstr(y + ((slot - pg) * lines) + 1, x + p, msg[:maxtxt], curses.color_pair(col))
 
 	# Something worked
 	return True
@@ -258,6 +279,7 @@ def calcPriority(s):
 	elif 0 <= s.lower().find('warn'):
 		return 2
 	return 6
+
 
 def processLineDate(s):
 
@@ -351,6 +373,7 @@ def processLineKMsg(s):
 
 	return { 'sev':d[0], 'seq':d[1], 'offset':d[2], 'time':float(d[2]) / 1000000.0 + t, 'msg':d[3] }
 
+
 def processLineWww(s):
 
 	d = shlex.split(s.replace('[', '"').replace(']', '"'))
@@ -378,7 +401,6 @@ def processLineWww(s):
 	#		t -= timedelta(hours = int(d[1][1:2]), minutes = int(d[1][3:]))
 	#	elif d[1][0] == '-':
 	#		t += timedelta(hours = int(d[1][1:2]), minutes = int(d[1][3:]))
-
 
 	t = time.time()
 
@@ -636,6 +658,7 @@ def drawScreen(p, ti, msgs = []):
 		# For each message
 		for i in msgs:
 
+			# Get severity
 			sev = int(getVal(i, 'sev', 6))
 
 			# Order by severity
@@ -644,17 +667,15 @@ def drawScreen(p, ti, msgs = []):
 				if 'time' in i:
 
 					try:
-
-						# Event time
 						tm = float(i['time'])
-
-						# Is it in the range of the display?
-						if tm > tmin and tm < tmax:
-
-							showTimelineItem(ti, p['page'], lines, i, tmin, tmax)
-
 					except:
 						continue
+
+					# Is it in the range of the display?
+					if tm > tmin and tm < tmax:
+
+						showTimelineItem(ti, p['page'], lines, i, tmin, tmax)
+
 
 	# Draw row numbers
 	showTimelineRowNums(ti, p['page'], lines)
@@ -662,7 +683,7 @@ def drawScreen(p, ti, msgs = []):
 	# Draw the in-use line
 	for i in range(0,len(ti['inuse'])):
 		if 0 < ti['inuse'][i]:
-			stdscr.addstr(3, i, '.', curses.color_pair(ti['inuse'][i] + 10))
+			stdscr.addstr(3, 4 + i, '|', curses.color_pair(ti['inuse'][i] + 10))
 
 	# Update max page
 	if ti['max_disp'] < ti['max_slot']:
@@ -729,7 +750,7 @@ def main():
 	ap.add_argument('--time', '-t', default=0, type=str, help='Time start')
 
 	ap.add_argument('--refresh', '-R', default=3, type=float, help='Data refresh interval in seconds, 0 for no refresh')
-	ap.add_argument('--scroll', '-s', default=1, type=int, help='1 = Auto scroll data, 0 = Do not auto scroll')
+	ap.add_argument('--scroll', '-s', default=75, type=int, help='1-100, percentage of screen for auto scroll position, 0 = Do not auto scroll')
 	ap.add_argument('--lines', '-l', default=2, type=int, help='Number of lines per timeline item, can be 1, 2, or 3')
 	ap.add_argument('--maxmsgbuf', '-m', default=1000, type=int, help='Maxium number of messages to queue')
 	ap.add_argument('--maxfileread', '-M', default=10000, type=int, help='Maxium number of bytes to read from a file, 0 for all')
@@ -763,6 +784,17 @@ def main():
 	# Default to system log
 	if not p['inputfile']:
 		p['inputfile'] = '/var/log/syslog'
+
+	# Bound check scroll, on second thought, why not allow now position to be offscreen?
+#	if 0 > p['scroll']:
+#		p['scroll'] = 0
+#	elif 100 < p['scroll']:
+#		p['scroll'] = 100
+
+	# Initialize scroll mode
+	scroll = p['scroll']
+	if 0 == p['scroll']:
+		p['scroll'] = 75
 
 	# Data buffer
 	msgs = []
@@ -802,15 +834,20 @@ def main():
 		if len(p['outputfile']):
 			fo = open(p['outputfile'], 'ab')
 
+		run = 1
+
 		#-----------------------------------------------------------
 		# Run the loop
-		while 1:
+		while run:
 
 			# Current time
 			now = time.time()
 
 			#-------------------------------------------------------
 			# Process key presses
+
+			# No key press yet
+			waskey = 0
 
 			# Don't poll the keyboard if we're getting data from stdin
 			if usestdin:
@@ -819,7 +856,9 @@ def main():
 				key = stdscr.getch()
 
 			# Did we get a key press?
-			if 0 < key:
+			while 0 < key:
+
+				waskey = key
 
 				# Was there a screen resize?
 				if curses.KEY_RESIZE == key:
@@ -840,12 +879,12 @@ def main():
 
 				# Scroll right
 				elif curses.KEY_RIGHT == key:
-					p['scroll'] = 0
+					scroll = 0
 					p['time'] += float(p['time_range']) / 20
 
 				# Scroll left
 				elif curses.KEY_LEFT == key:
-					p['scroll'] = 0
+					scroll = 0
 					p['time'] -= float(p['time_range']) / 20
 
 				# Page up
@@ -866,11 +905,16 @@ def main():
 
 				# Auto scrolling
 				elif 's' == chr(key).lower():
-					p['scroll'] = not p['scroll']
+					scroll = p['scroll']
 
 				# Quit on Escape or 'q'
 				elif 27 == key or 'q' == chr(key).lower():
+					run = 0
 					break
+
+				# See if there is another key waiting
+				key = stdscr.getch()
+
 
 			# Ensure reasonable page
 			if p['max_page'] < p['page']:
@@ -958,9 +1002,9 @@ def main():
 			#-------------------------------------------------------
 			# Update the terminal
 
-			# Track real time?
-			if p['scroll']:
-				p['time'] = now - (p['time_range'] * 0.75)
+			# Auto scroll?
+			if scroll:
+				p['time'] = now - (p['time_range'] * scroll / 100)
 
 			# Check for terminal resize
 			_h, _w = stdscr.getmaxyx()
@@ -975,7 +1019,6 @@ def main():
 
 			# If curses complains, it's probably a terminal resize
 			except curses.error:
-				key = 1
 				pass
 
 			# Debug info
@@ -992,7 +1035,7 @@ def main():
 			stdscr.refresh()
 
 			# Pause if no keys being pressed
-			if 0 >= key:
+			if 0 >= waskey:
 				time.sleep(.25)
 
 	# Ignore CTRL+C
