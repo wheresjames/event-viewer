@@ -69,7 +69,8 @@ optional arguments:
   --refresh REFRESH, -R REFRESH
                         Data refresh interval in seconds, 0 for no refresh
   --scroll SCROLL, -s SCROLL
-                        1 = Auto scroll data, 0 = Do not auto scroll
+                        1-100, percentage of screen for auto scroll position,
+                        0 = Do not auto scroll
   --lines LINES, -l LINES
                         Number of lines per timeline item, can be 1, 2, or 3
   --maxmsgbuf MAXMSGBUF, -m MAXMSGBUF
