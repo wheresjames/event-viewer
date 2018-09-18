@@ -31,7 +31,13 @@ stdscr = 0
 # Timeline
 
 def initTimeline(w, h):
-	return {'w': w, 'h': h, 'x': 0, 'y': 0, 'start': 0, 'end': 0, 'slots': numpy.zeros((h, w)) }
+
+	# At least 500 rows
+	if 500 < h:
+		h = 500
+
+	return {'w': w, 'h': h, 'x': 0, 'y': 0, 'start': 0, 'end': 0, \
+			'max_disp': 0, 'max_slot': 0, 'slots': numpy.zeros((h, w)) }
 
 
 def clearTimeSlots(ti, w, h):
@@ -76,7 +82,7 @@ def drawTimeline(ti, x, y, start, end, color):
 	ti['end'] = end
 
 	# Get width / height
-	w = ti['w'] - 2
+	w = ti['w'] - x - 2
 	h = ti['h']
 
 	# Text width
@@ -115,11 +121,23 @@ def drawTimeline(ti, x, y, start, end, color):
 
 	return True
 
-
-def showTimelineItem(ti, lines, inf, tmin, tmax):
+def showTimelineRowNums(ti, pg, lines):
 
 	y = 4
 	x = 0
+	maxdisp = ti['max_disp']
+
+	n = pg
+	for i in range(0, ti['max_disp']):
+		n += 1
+		stdscr.addstr(y + (i * lines), x, "%02d" % n, curses.color_pair(1))
+
+
+
+def showTimelineItem(ti, pg, lines, inf, tmin, tmax):
+
+	y = 4
+	x = 4
 
 	tr = tmax - tmin
 	w = ti['w']
@@ -130,6 +148,10 @@ def showTimelineItem(ti, lines, inf, tmin, tmax):
 
 	# Start position
 	p = int((float(inf['time']) - tmin) * w / tr)
+
+	# Number of displayable slots
+	maxdisp = int((h - y - 2) / lines)
+	ti['max_disp'] = maxdisp
 
 	# Must fall onto screen
 	if p < x:
@@ -167,9 +189,10 @@ def showTimelineItem(ti, lines, inf, tmin, tmax):
 	pslot = getVal(inf, 'slot', 0)
 	slot = -1
 	slots = ti['slots']
+	maxslots = len(slots[0])
 
 	# Find a slot
-	for s in range(0, int((h - y - 2) / lines)):
+	for s in range(0, maxslots):
 
 		# Is there room for text in this slot?
 		for i in range(0, maxtxt):
@@ -189,6 +212,10 @@ def showTimelineItem(ti, lines, inf, tmin, tmax):
 	# Mark as preferred slot (even if we didn't get a slot)
 	inf['slot'] = s
 
+	# Track max slot
+	if ti['max_slot'] < slot:
+		ti['max_slot'] = slot
+
 	# Did we find a slot?
 	if 0 > slot:
 		return False
@@ -198,11 +225,11 @@ def showTimelineItem(ti, lines, inf, tmin, tmax):
 		slots[slot][i] = 1
 
 	# Show what we have room for
-	if 0 < maxtxt:
+	if 0 < maxtxt and slot >= pg and (slot - pg) < maxdisp:
 
 		# Only one line per slot, just show |
 		if 1 == lines:
-			stdscr.addstr(y + slot, p, "|", curses.color_pair(col + 10))
+			stdscr.addstr(y + slot - pg, p, "|", curses.color_pair(col + 10))
 
 		# More than one line per slot, show time and description
 		elif 1 < lines:
@@ -211,12 +238,12 @@ def showTimelineItem(ti, lines, inf, tmin, tmax):
 			if 14 <= (w - p):
 				fsec = float(t) - int(t)
 				tt = datetime.fromtimestamp(t).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:]
-				stdscr.addstr(y + (slot * lines), p, "| " + tt, curses.color_pair(col + 10))
+				stdscr.addstr(y + ((slot - pg) * lines), p, "| " + tt, curses.color_pair(col + 10))
 			else:
-				stdscr.addstr(y + (slot * lines), p, "|", curses.color_pair(col + 10))
+				stdscr.addstr(y + ((slot - pg) * lines), p, "|", curses.color_pair(col + 10))
 
 			# Show the description
-			stdscr.addstr(y + (slot * lines) + 1, p, inf['msg'][:maxtxt], curses.color_pair(col))
+			stdscr.addstr(y + ((slot - pg) * lines) + 1, p, inf['msg'][:maxtxt], curses.color_pair(col))
 
 	# Something worked
 	return True
@@ -596,11 +623,12 @@ def drawScreen(p, ti, msgs = []):
 	pr = w - 1
 
 	# Show timeline
-	drawTimeline(ti, 0, 1, tmin, tmax, curses.color_pair(1))
+	drawTimeline(ti, 4, 1, tmin, tmax, curses.color_pair(1))
 
 	# Clear slots
 	clearTimeSlots(ti, w, h)
 	ti['inuse'] = [0] * w
+	ti['max_slot'] = 0
 
 	# For each severity level
 	for k in range(1, 5):
@@ -623,15 +651,24 @@ def drawScreen(p, ti, msgs = []):
 						# Is it in the range of the display?
 						if tm > tmin and tm < tmax:
 
-							showTimelineItem(ti, lines, i, tmin, tmax)
+							showTimelineItem(ti, p['page'], lines, i, tmin, tmax)
 
 					except:
 						continue
+
+	# Draw row numbers
+	showTimelineRowNums(ti, p['page'], lines)
 
 	# Draw the in-use line
 	for i in range(0,len(ti['inuse'])):
 		if 0 < ti['inuse'][i]:
 			stdscr.addstr(3, i, '.', curses.color_pair(ti['inuse'][i] + 10))
+
+	# Update max page
+	if ti['max_disp'] < ti['max_slot']:
+		p['max_page'] = ti['max_slot'] - ti['max_disp']
+	else:
+		p['max_page'] = 0
 
 
 def initCurses():
@@ -737,6 +774,10 @@ def main():
 	# Output file handle
 	fo = 0
 
+	# Page offset
+	p['page'] = 0
+	p['max_page' ] = 0
+
 	#---------------------------------------------------------------
 	# Catch exceptions so we can restore the screen
 	try:
@@ -807,6 +848,16 @@ def main():
 					p['scroll'] = 0
 					p['time'] -= float(p['time_range']) / 20
 
+				# Page up
+				elif curses.KEY_PPAGE == key:
+					if 0 < p['page']:
+						p['page'] -= 1
+
+				# Page down
+				elif curses.KEY_NPAGE == key:
+					if p['max_page'] > p['page']:
+						p['page'] += 1
+
 				# Lines per timeline item
 				elif 'l' == chr(key).lower():
 					p['msg_lines'] += 1
@@ -821,6 +872,9 @@ def main():
 				elif 27 == key or 'q' == chr(key).lower():
 					break
 
+			# Ensure reasonable page
+			if p['max_page'] < p['page']:
+				p['page'] = p['max_page']
 
 			#-------------------------------------------------------
 			# Get Data
