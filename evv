@@ -450,41 +450,56 @@ def processLine(p, s):
 def filterLine(filter, s):
 
 	if not len(s):
-		return [], ''
+		return {}, ''
 
 	# Do we have a filter?
 	if not len(filter):
-		return [], s
+		return {}, s
 
 	try:
-		r = []
+
+		# Apply filter
 		m = re.match(filter, s)
 		if not m:
-			return [], ''
+			return {}, ''
 
+		# Grab the results
 		g = m.groupdict()
+		if not g:
+			g = {}
+
+		# Stuff integer values into dictionary
+		try:
+			for i in range(1, 10):
+				g[str(i)] = m.group(i)
+		except:
+			pass
+
+		r = {}
 
 		# Message
-		if 1 in g:
-			s = g[1]
-		elif 'msg' in g:
+		if 'msg' in g:
 			s = g['msg']
+			r['msg'] = s
+		elif '1' in g:
+			s = g['1']
+			r['msg'] = s
 
 		# Punt if we didn't get a message
 		if not len(s):
-			return [], ''
+			return {}, ''
 
 		# Did we get a time?
-		if 2 in g:
-			r['time'] = g[2]
-		elif 'time' in g:
+		if 'time' in g:
 			r['time'] = g['time']
+		elif '2' in g:
+			r['time'] = g['2']
 
 		# Did we get a severity?
-		if 3 in g:
-			r['sev'] = g[3]
-		elif 'sev' in g:
+		if 'sev' in g:
 			r['sev'] = g['sev']
+		elif '3' in g:
+			r['sev'] = g['3']
 
 		# Process time
 		if 'time' in r:
@@ -500,6 +515,18 @@ def filterLine(filter, s):
 				except:
 					del r['time']
 
+			# fractional seconds
+			if 'time' in r:
+				try:
+					if 'nsecs' in g:
+						r['time'] += float("0.%09d" % int(g['nsecs']))
+					if 'usecs' in g:
+						r['time'] += float("0.%06d" % int(g['nsecs']))
+					if 'msecs' in g:
+						r['time'] += float("0.%03d" % int(g['nsecs']))
+				except:
+					pass
+
 		# Process severity
 		if 'sev' in r:
 			try:
@@ -512,21 +539,41 @@ def filterLine(filter, s):
 	except:
 		pass
 
-	return [], ''
+	return {}, ''
 
 
 #-------------------------------------------------------------------
 # Functions
 
-def getLine(fh):
+inbuf = ''
+def getLine(fh, sep = ''):
+	global inbuf
 
 	# Make sure the file is ready to read
-	if fh not in select.select([fh], [], [], 0)[0]:
-		return ''
+	while fh in select.select([fh], [], [], 0)[0]:
 
-	# Try to read a line
-	return fh.readline()
+		# Try to read a line
+		s = fh.readline()
 
+		# Filter chars
+		printable = set(string.printable)
+		s = filter(lambda x: ord(x) >= ord(' ') and x in printable, s)
+
+		# Custom separator?
+		if not sep or not len(sep):
+			return s
+
+		# Buffer
+		inbuf += s
+
+		# Look for separator
+		pos = inbuf.find(sep)
+		if 0 <= pos:
+			s = inbuf[:pos]
+			inbuf = inbuf[pos + len(sep):]
+			return s
+
+	return ''
 
 def getVal(a, k, d = 0):
 
@@ -745,12 +792,13 @@ def main():
 	ap.add_argument('--inputfilter', '-f', default='', type=str, help='Regex filter expression for input data')
 	ap.add_argument('--outputfile', '-o', default='', type=str, help='Append logs to output file')
 	ap.add_argument('--outputformat', '-O', default='', type=str, help='Output data format')
+	ap.add_argument('--separator', '-s', default='', type=str, help='Input data separator, defualt is CR/LF')
 
 	ap.add_argument('--timerange', '-r', default=600.0, type=float, help='Time range')
 	ap.add_argument('--time', '-t', default=0, type=str, help='Time start')
 
 	ap.add_argument('--refresh', '-R', default=3, type=float, help='Data refresh interval in seconds, 0 for no refresh')
-	ap.add_argument('--scroll', '-s', default=75, type=int, help='1-100, percentage of screen for auto scroll position, 0 = Do not auto scroll')
+	ap.add_argument('--autoscroll', '-a', default=75, type=int, help='1-100, percentage of screen for auto scroll position, 0 = Do not auto scroll')
 	ap.add_argument('--lines', '-l', default=2, type=int, help='Number of lines per timeline item, can be 1, 2, or 3')
 	ap.add_argument('--maxmsgbuf', '-m', default=1000, type=int, help='Maxium number of messages to queue')
 	ap.add_argument('--maxfileread', '-M', default=10000, type=int, help='Maxium number of bytes to read from a file, 0 for all')
@@ -765,11 +813,14 @@ def main():
 	p['outputfile'] = args.outputfile
 	p['outputformat'] = args.outputformat
 
+	# +++ Need a better compromise with the command line
+	p['separator'] = args.separator.replace("\\", "")
+
 	p['time_range'] = args.timerange
 	p['time'] = time.time()
 	p['msg_lines'] = args.lines
 	p['refresh'] = args.refresh
-	p['scroll'] = args.scroll
+	p['scroll'] = args.autoscroll
 	p['maxmsgbuf'] = args.maxmsgbuf
 	p['maxfileread'] = args.maxfileread
 	p['debug'] = args.debug
@@ -942,12 +993,12 @@ def main():
 							setFilePtr(fh, -p['maxfileread'])
 
 							# Eat potential partial line
-							getLine(fh)
+							getLine(fh, p['separator'])
 
 				# Read data from input stream
 				while 1:
 
-					s = getLine(fh)
+					s = getLine(fh, p['separator'])
 					if not len(s):
 						break;
 
