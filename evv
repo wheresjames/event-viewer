@@ -730,7 +730,7 @@ def drawScreen(p, ti, msgs = []):
 	# Draw the in-use line
 	for i in range(0,len(ti['inuse'])):
 		if 0 < ti['inuse'][i]:
-			stdscr.addstr(3, 4 + i, '|', curses.color_pair(ti['inuse'][i] + 10))
+			stdscr.addstr(3, 4 + i, '^', curses.color_pair(ti['inuse'][i] + 10))
 
 	# Update max page
 	if ti['max_disp'] < ti['max_slot']:
