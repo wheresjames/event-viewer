@@ -118,7 +118,7 @@ def drawTimeline(ti, x, y, start, end, color):
 	if start < now and end > now:
 		xn = int((now - start) * w / (end - start))
 	elif start > now:
-		xn = x
+		xn = 0
 		nowmrk = "<"
 	else:
 		xn = w - 1
