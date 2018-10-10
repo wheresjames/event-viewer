@@ -118,7 +118,7 @@ def drawTimeline(ti, x, y, start, end, color):
 	if start < now and end > now:
 		xn = int((now - start) * w / (end - start))
 	elif start > now:
-		xn = x
+		xn = 0
 		nowmrk = "<"
 	else:
 		xn = w - 1
@@ -450,41 +450,56 @@ def processLine(p, s):
 def filterLine(filter, s):
 
 	if not len(s):
-		return [], ''
+		return {}, ''
 
 	# Do we have a filter?
 	if not len(filter):
-		return [], s
+		return {}, s
 
 	try:
-		r = []
+
+		# Apply filter
 		m = re.match(filter, s)
 		if not m:
-			return [], ''
+			return {}, ''
 
+		# Grab the results
 		g = m.groupdict()
+		if not g:
+			g = {}
+
+		# Stuff integer values into dictionary
+		try:
+			for i in range(1, 10):
+				g[str(i)] = m.group(i)
+		except:
+			pass
+
+		r = {}
 
 		# Message
-		if 1 in g:
-			s = g[1]
-		elif 'msg' in g:
+		if 'msg' in g:
 			s = g['msg']
+			r['msg'] = s
+		elif '1' in g:
+			s = g['1']
+			r['msg'] = s
 
 		# Punt if we didn't get a message
 		if not len(s):
-			return [], ''
+			return {}, ''
 
 		# Did we get a time?
-		if 2 in g:
-			r['time'] = g[2]
-		elif 'time' in g:
+		if 'time' in g:
 			r['time'] = g['time']
+		elif '2' in g:
+			r['time'] = g['2']
 
 		# Did we get a severity?
-		if 3 in g:
-			r['sev'] = g[3]
-		elif 'sev' in g:
+		if 'sev' in g:
 			r['sev'] = g['sev']
+		elif '3' in g:
+			r['sev'] = g['3']
 
 		# Process time
 		if 'time' in r:
@@ -500,6 +515,18 @@ def filterLine(filter, s):
 				except:
 					del r['time']
 
+			# fractional seconds
+			if 'time' in r:
+				try:
+					if 'nsecs' in g:
+						r['time'] += float("0.%09d" % int(g['nsecs']))
+					if 'usecs' in g:
+						r['time'] += float("0.%06d" % int(g['nsecs']))
+					if 'msecs' in g:
+						r['time'] += float("0.%03d" % int(g['nsecs']))
+				except:
+					pass
+
 		# Process severity
 		if 'sev' in r:
 			try:
@@ -512,21 +539,41 @@ def filterLine(filter, s):
 	except:
 		pass
 
-	return [], ''
+	return {}, ''
 
 
 #-------------------------------------------------------------------
 # Functions
 
-def getLine(fh):
+inbuf = ''
+def getLine(fh, sep = ''):
+	global inbuf
 
 	# Make sure the file is ready to read
-	if fh not in select.select([fh], [], [], 0)[0]:
-		return ''
+	while fh in select.select([fh], [], [], 0)[0]:
 
-	# Try to read a line
-	return fh.readline()
+		# Try to read a line
+		s = fh.readline()
 
+		# Filter chars
+		printable = set(string.printable)
+		s = filter(lambda x: ord(x) >= ord(' ') and x in printable, s)
+
+		# Custom separator?
+		if not sep or not len(sep):
+			return s
+
+		# Buffer
+		inbuf += s
+
+		# Look for separator
+		pos = inbuf.find(sep)
+		if 0 <= pos:
+			s = inbuf[:pos]
+			inbuf = inbuf[pos + len(sep):]
+			return s
+
+	return ''
 
 def getVal(a, k, d = 0):
 
@@ -629,14 +676,14 @@ def drawScreen(p, ti, msgs = []):
 
 	# Current time
 	t = p['time']
-	lines = p['msg_lines']
+	lines = p['lines']
 
 	# Screen width / height
 	w = ti['w']
 	h = ti['h']
 
 	# Time range we will be displaying
-	time_range = getVal(p, 'time_range', 60)
+	time_range = getVal(p, 'timerange', 60)
 	tmin = t
 	tmax = t + time_range
 	tr = tmax - tmin
@@ -683,7 +730,7 @@ def drawScreen(p, ti, msgs = []):
 	# Draw the in-use line
 	for i in range(0,len(ti['inuse'])):
 		if 0 < ti['inuse'][i]:
-			stdscr.addstr(3, 4 + i, '|', curses.color_pair(ti['inuse'][i] + 10))
+			stdscr.addstr(3, 4 + i, '^', curses.color_pair(ti['inuse'][i] + 10))
 
 	# Update max page
 	if ti['max_disp'] < ti['max_slot']:
@@ -745,34 +792,24 @@ def main():
 	ap.add_argument('--inputfilter', '-f', default='', type=str, help='Regex filter expression for input data')
 	ap.add_argument('--outputfile', '-o', default='', type=str, help='Append logs to output file')
 	ap.add_argument('--outputformat', '-O', default='', type=str, help='Output data format')
+	ap.add_argument('--separator', '-s', default='', type=str, help='Input data separator, defualt is CR/LF')
 
 	ap.add_argument('--timerange', '-r', default=600.0, type=float, help='Time range')
 	ap.add_argument('--time', '-t', default=0, type=str, help='Time start')
 
 	ap.add_argument('--refresh', '-R', default=3, type=float, help='Data refresh interval in seconds, 0 for no refresh')
-	ap.add_argument('--scroll', '-s', default=75, type=int, help='1-100, percentage of screen for auto scroll position, 0 = Do not auto scroll')
+	ap.add_argument('--autoscroll', '-a', default=75, type=int, help='1-100, percentage of screen for auto scroll position, 0 = Do not auto scroll')
 	ap.add_argument('--lines', '-l', default=2, type=int, help='Number of lines per timeline item, can be 1, 2, or 3')
 	ap.add_argument('--maxmsgbuf', '-m', default=1000, type=int, help='Maxium number of messages to queue')
 	ap.add_argument('--maxfileread', '-M', default=10000, type=int, help='Maxium number of bytes to read from a file, 0 for all')
+	ap.add_argument('--keyboard', '-k', action='store_true', help='Force keyboard processing')
 	ap.add_argument('--debug', '-D', action='store_true', help='Show debug information')
-	args = ap.parse_args()
 
-	p = {}
-	p['inputfile'] = args.inputfile
-	p['inputformat'] = args.inputformat
-	p['inputfilter'] = args.inputfilter
-	p['inputbreak'] = args.inputbreak
-	p['outputfile'] = args.outputfile
-	p['outputformat'] = args.outputformat
+	# Get arguments
+	p = vars(ap.parse_args())
 
-	p['time_range'] = args.timerange
-	p['time'] = time.time()
-	p['msg_lines'] = args.lines
-	p['refresh'] = args.refresh
-	p['scroll'] = args.scroll
-	p['maxmsgbuf'] = args.maxmsgbuf
-	p['maxfileread'] = args.maxfileread
-	p['debug'] = args.debug
+	# +++ Need a better compromise with the command line
+	p['separator'] = p['separator'].replace("\\", "")
 
 
 	#---------------------------------------------------------------
@@ -786,15 +823,15 @@ def main():
 		p['inputfile'] = '/var/log/syslog'
 
 	# Bound check scroll, on second thought, why not allow now position to be offscreen?
-#	if 0 > p['scroll']:
-#		p['scroll'] = 0
-#	elif 100 < p['scroll']:
-#		p['scroll'] = 100
+#	if 0 > p['autoscroll']:
+#		p['autoscroll'] = 0
+#	elif 100 < p['autoscroll']:
+#		p['autoscroll'] = 100
 
 	# Initialize scroll mode
-	scroll = p['scroll']
-	if 0 == p['scroll']:
-		p['scroll'] = 75
+	scroll = p['autoscroll']
+	if 0 == p['autoscroll']:
+		p['autoscroll'] = 75
 
 	# Data buffer
 	msgs = []
@@ -850,7 +887,7 @@ def main():
 			waskey = 0
 
 			# Don't poll the keyboard if we're getting data from stdin
-			if usestdin:
+			if usestdin and not p['keyboard']:
 				key = 0
 			else:
 				key = stdscr.getch()
@@ -867,25 +904,25 @@ def main():
 
 				# Zoom in
 				elif curses.KEY_UP == key:
-					if 0.001 < p['time_range']:
-						p['time'] += p['time_range'] / 20
-						p['time_range'] /= 1.1
+					if 0.001 < p['timerange']:
+						p['time'] += p['timerange'] / 20
+						p['timerange'] /= 1.1
 
 				# Zoom out
 				elif curses.KEY_DOWN == key:
-					if 100000 > p['time_range']:
-						p['time'] -= p['time_range'] / 20
-						p['time_range'] *= 1.1
+					if 100000 > p['timerange']:
+						p['time'] -= p['timerange'] / 20
+						p['timerange'] *= 1.1
 
 				# Scroll right
 				elif curses.KEY_RIGHT == key:
 					scroll = 0
-					p['time'] += float(p['time_range']) / 20
+					p['time'] += float(p['timerange']) / 20
 
 				# Scroll left
 				elif curses.KEY_LEFT == key:
 					scroll = 0
-					p['time'] -= float(p['time_range']) / 20
+					p['time'] -= float(p['timerange']) / 20
 
 				# Page up
 				elif curses.KEY_PPAGE == key:
@@ -899,13 +936,13 @@ def main():
 
 				# Lines per timeline item
 				elif 'l' == chr(key).lower():
-					p['msg_lines'] += 1
-					if 3 < p['msg_lines']:
-						p['msg_lines'] = 1
+					p['lines'] += 1
+					if 3 < p['lines']:
+						p['lines'] = 1
 
 				# Auto scrolling
 				elif 's' == chr(key).lower():
-					scroll = p['scroll']
+					scroll = p['autoscroll']
 
 				# Quit on Escape or 'q'
 				elif 27 == key or 'q' == chr(key).lower():
@@ -942,12 +979,12 @@ def main():
 							setFilePtr(fh, -p['maxfileread'])
 
 							# Eat potential partial line
-							getLine(fh)
+							getLine(fh, p['separator'])
 
 				# Read data from input stream
 				while 1:
 
-					s = getLine(fh)
+					s = getLine(fh, p['separator'])
 					if not len(s):
 						break;
 
@@ -1004,7 +1041,7 @@ def main():
 
 			# Auto scroll?
 			if scroll:
-				p['time'] = now - (p['time_range'] * scroll / 100)
+				p['time'] = now - (p['timerange'] * scroll / 100)
 
 			# Check for terminal resize
 			_h, _w = stdscr.getmaxyx()
@@ -1048,7 +1085,7 @@ def main():
 			fo.close()
 		curses.endwin()
 		print "...EXCEPTION..."
-		raise		
+		raise
 
 	if fo:
 		fo.close()
