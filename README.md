@@ -34,7 +34,7 @@ This python script `evv` will allow you to graphically navigate log files.
 
 * View data from stdin
 
-`echo "Hello World!" | evv -f -`
+`echo "Hello World!" | evv -i -`
 
 
 ## Help
