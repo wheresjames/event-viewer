@@ -436,7 +436,7 @@ def processLineWww(s):
 
 	if len(d):
 		try:
-			d = dateutil.parser.parse(d[0], fuzzy=True)
+			d = dateutil.parser.parse(d, fuzzy=True)
 			if d:
 				t = time.mktime(d.timetuple())
 		except:
