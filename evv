@@ -50,8 +50,14 @@ def clearTimeSlots(ti, w, h):
 
 	ti['slots'] = numpy.zeros((rows, w))
 
+def getTimeStr(t, fmt):
 
-def drawSplitTime(y, x1, x2, tw, t1, t2, color):
+	fsec = float(t) - int(t)
+	f = fmt.replace("%u", ("%.3f" % fsec)[2:])
+	return datetime.fromtimestamp(t).strftime(f)
+
+
+def drawSplitTime(y, x1, x2, tw, t1, t2, color, fmt):
 
 	# Is there enough room for more time?
 	r = x2 - x1
@@ -64,16 +70,13 @@ def drawSplitTime(y, x1, x2, tw, t1, t2, color):
 	# Line halfway point
 	xh = int(x2 - ((x2 - x1) / 2))
 
-	# Get fractional second
-	fsec = float(th) - int(th)
-
 	# Draw timestamp at the half way point
-	stdscr.addstr(y, int(xh - (tw / 2)), datetime.fromtimestamp(th).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:], color)
+	stdscr.addstr(y, int(xh - (tw / 2)), getTimeStr(th, fmt), color)
 	stdscr.addstr(y + 1, xh, "|", color)
 
 	# Draw more markers
-	drawSplitTime(y, x1, xh, tw, t1, th, color)
-	drawSplitTime(y, xh, x2, tw, th, t2, color)
+	drawSplitTime(y, x1, xh, tw, t1, th, color, fmt)
+	drawSplitTime(y, xh, x2, tw, th, t2, color, fmt)
 
 
 def drawTimeline(ti, x, y, start, end, color):
@@ -81,6 +84,36 @@ def drawTimeline(ti, x, y, start, end, color):
 	# Can it be drawn?
 	if end <= start:
 		return False
+
+	# The current time
+	now = time.time()
+
+	# Range
+	r = end - start
+	if abs(now - start) > r:
+		r = abs(now - start)
+	if abs(now - end) > r:
+		r = abs(now - end)
+
+	# Choose a time format
+	if 30 > r:
+		tw = 12
+		fmt = "%H:%M:%S.%u"
+	elif (12 * 60 * 60) > r:
+		tw = 8
+		fmt = "%H:%M:%S"
+	elif (3 * 24 * 60 * 60) > r:
+		tw = 10
+		fmt = "%a %H:%M"
+	elif (20 * 24 * 60 * 60) > r:
+		tw = 12
+		fmt = "%b %-d %H:%M"
+	elif (100 * 24 * 60 * 60) > r:
+		tw = 6
+		fmt = "%b %-d"
+	else:
+		tw = 12
+		fmt = "%b %-d, %Y"
 
 	# Update timeline data
 	ti['x'] = x
@@ -92,28 +125,24 @@ def drawTimeline(ti, x, y, start, end, color):
 	w = ti['w'] - x - 2
 	h = ti['h']
 
-	# Text width
-	tw = 12
-
 	# Draw the timeline
 	for i in range(x, x + w):
 		stdscr.addstr(y + 1, i, "-", color)
 
 	# Draw start time
 	fsec = float(start) - int(start)
-	stdscr.addstr(y, x, datetime.fromtimestamp(start).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:], color)
+	stdscr.addstr(y, x, getTimeStr(start, fmt), color)
 	stdscr.addstr(y + 1, x, "|", color)
 
 	# Draw end time
 	fsec = float(end) - int(end)
-	stdscr.addstr(y, x + w - tw, datetime.fromtimestamp(end).strftime("%H:%M:%S") + ("%.3f" % fsec)[1:], color)
+	stdscr.addstr(y, x + w - tw, getTimeStr(end, fmt), color)
 	stdscr.addstr(y + 1, x + w - 1, "|", color)
 
 	# Draw time markers in between
-	drawSplitTime(y, x, x + w, tw, start, end, color)
+	drawSplitTime(y, x, x + w, tw, start, end, color, fmt)
 
 	# Draw "now" marker
-	now = time.time()
 	nowmrk = "|"
 	if start < now and end > now:
 		xn = int((now - start) * w / (end - start))
@@ -393,7 +422,8 @@ def processLineWww(s):
 	#d = datetime.strptime(dt, "%d/%b/%Y:%H:%M:%S %z");
 	#t = time.mktime(d.timetuple())
 
-	d = dt.split(" ")
+#	d = dt.split(" ")
+	d = dt
 
 	#if len(d):
 	#	t = datetime.strptime(d[0],'%d/%b/%Y:%H:%M:%S')
@@ -425,7 +455,7 @@ def processLineWww(s):
 	elif 300 <= st:
 		sev = 3
 
-	return { 'sev':sev, 'time':t, 'msg':ip + " : " + sz + " : " + ln }
+	return { 'sev':sev, 'time':t, 'msg':ip + " : " + str(st) + " : " + sz + " : " + ln }
 
 
 def processLine(p, s):
@@ -910,7 +940,7 @@ def main():
 
 				# Zoom out
 				elif curses.KEY_DOWN == key:
-					if 100000 > p['timerange']:
+					if 1000000000 > p['timerange']:
 						p['time'] -= p['timerange'] / 20
 						p['timerange'] *= 1.1
 
@@ -922,7 +952,8 @@ def main():
 				# Scroll left
 				elif curses.KEY_LEFT == key:
 					scroll = 0
-					p['time'] -= float(p['timerange']) / 20
+					if 0 < (p['time'] - float(p['timerange']) / 20):
+						p['time'] -= float(p['timerange']) / 20
 
 				# Page up
 				elif curses.KEY_PPAGE == key:
